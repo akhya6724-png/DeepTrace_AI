@@ -1,0 +1,74 @@
+"""AI-generated image detection (modular interface).
+
+No pretrained detector is bundled: this installation has no validated, locally runnable
+detector configured, and metadata/ELA/statistics cannot reliably identify AI images.
+The result is therefore reported as ``unavailable``. Nothing here fabricates a score.
+
+To add a real detector later:
+  1. Implement a class with ``name``, ``describe()`` and ``detect(image) -> dict`` (see below).
+  2. Register it in ``DETECTORS``.
+  3. Select it with DEEPTRACE_AI_DETECTOR=<name>.
+Before enabling one, check its licence, intended task, input requirements, documented
+score meaning and known failure cases, and report those in ``detector`` and ``limitations``.
+"""
+
+from typing import Callable, Protocol
+
+from PIL import Image
+
+GENERIC_LIMITATIONS = [
+    "Metadata and ELA alone cannot reliably determine whether an image was AI-generated.",
+    "Absence of a detector result must not be read as evidence that the image is real.",
+]
+
+
+class AIDetector(Protocol):
+    name: str
+
+    def describe(self) -> dict: ...
+
+    def detect(self, image: Image.Image) -> dict:
+        """Return {"prediction": str, "confidence": float | None, "explanation": str, "limitations": [..]}."""
+        ...
+
+
+# name -> factory. Intentionally empty: no validated detector is bundled.
+DETECTORS: dict[str, Callable[[], AIDetector]] = {}
+
+
+def _unavailable(explanation: str) -> dict:
+    return {
+        "status": "unavailable",
+        "prediction": None,
+        "confidence": None,
+        "method": None,
+        "detector": None,
+        "error": None,
+        "explanation": explanation,
+        "limitations": list(GENERIC_LIMITATIONS),
+    }
+
+
+def run_ai_detection(image: Image.Image, detector_name: str = "none") -> dict:
+    if detector_name in ("", "none"):
+        return _unavailable("No validated AI-image detector is configured in this installation.")
+    factory = DETECTORS.get(detector_name)
+    if factory is None:
+        return _unavailable(f"The configured detector '{detector_name}' is not registered in this installation.")
+    try:
+        detector = factory()
+        output = detector.detect(image)
+        return {
+            "status": "ok",
+            "prediction": output.get("prediction"),
+            "confidence": output.get("confidence"),
+            "method": detector.name,
+            "detector": detector.describe(),
+            "error": None,
+            "explanation": output.get("explanation", ""),
+            "limitations": list(output.get("limitations", [])) + GENERIC_LIMITATIONS,
+        }
+    except Exception as exc:  # a failing detector must never break the analysis
+        result = _unavailable("The configured detector failed to run.")
+        result.update({"status": "error", "error": f"{type(exc).__name__}"})
+        return result
